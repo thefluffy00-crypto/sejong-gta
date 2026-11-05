@@ -1,3 +1,7 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>세종고GTA</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -134,7 +138,7 @@ details.pts[open] summary::after{content:"접기"}
 
 <canvas id="c" tabindex="0" aria-label="세종고등학교 3D 캠퍼스"></canvas>
 
-<div class="hud" id="where"><div class="eb" id="modeTag">세종고GTA · 일반 모드</div><div class="nm" id="zone">정문</div><div class="co" id="coord"></div><div class="co" id="dcount" hidden></div></div>
+<div class="hud" id="where"><div class="eb" id="modeTag">세종고GTA · 일반 모드</div><div class="nm" id="zone">정문</div><div class="co" id="coord"></div><div class="co" id="dcount" hidden></div><div class="co" id="soc" hidden></div></div>
 <div class="hud" id="tr">
   <button class="btn met" id="metBtn" title="보는 곳에 운석 떨어뜨리기 (클릭 · G)" hidden>운석</button>
   <button class="btn" id="menuBtn" title="메뉴 (Esc · M)">메뉴</button>
@@ -169,6 +173,9 @@ details.pts[open] summary::after{content:"접기"}
     <div class="st-opts"><div class="lbl">시간대</div>
       <div class="seg" role="group" aria-label="시간대"><button data-t="day" aria-pressed="false">낮</button><button data-t="dusk" aria-pressed="true">노을</button><button data-t="night" aria-pressed="false">밤</button></div>
     </div>
+    <div class="st-opts"><div class="lbl">그래픽</div>
+      <div class="seg" role="group" aria-label="그래픽 품질"><button data-g="0" aria-pressed="false">낮음</button><button data-g="1" aria-pressed="true">중간</button><button data-g="2" aria-pressed="false">높음</button></div>
+    </div>
     <button class="st-go" id="startBtn">게임 시작 <kbd>Enter</kbd></button>
     <div class="st-keys" id="stKeys"></div>
   </div>
@@ -184,6 +191,8 @@ details.pts[open] summary::after{content:"접기"}
       <div class="seg" role="group" aria-label="게임 모드"><button data-mode="walk" aria-pressed="true">일반</button><button data-mode="meteor" aria-pressed="false">운석</button></div></div>
     <div class="pz-row"><div class="lbl">시간대</div>
       <div class="seg" role="group" aria-label="시간대"><button data-t="day" aria-pressed="false">낮</button><button data-t="dusk" aria-pressed="true">노을</button><button data-t="night" aria-pressed="false">밤</button></div></div>
+    <div class="pz-row"><div class="lbl">그래픽</div>
+      <div class="seg" role="group" aria-label="그래픽 품질"><button data-g="0" aria-pressed="false">낮음</button><button data-g="1" aria-pressed="true">중간</button><button data-g="2" aria-pressed="false">높음</button></div></div>
     <div class="pz-row"><div class="lbl">학교</div>
       <div class="pts-actions"><button class="mini" id="restoreBtn">원래대로 되돌리기</button><button class="mini" id="titleBtn">처음 화면으로</button></div></div>
     <div class="keys" id="pzKeys"></div>
@@ -203,6 +212,13 @@ details.pts[open] summary::after{content:"접기"}
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const $ = s => document.querySelector(s);
 const V3 = THREE.Vector3;
@@ -251,6 +267,73 @@ const CENTER = new V3(X(470), 0, Z(500));
 sun.target.position.copy(CENTER);
 scene.add(sun, sun.target);
 scene.fog = new THREE.Fog(0xd9c2a8, 260, 2600);
+
+/* ---------- graphics quality: sky probe (IBL) + post-processing ---------- */
+// GFX 0 = 낮은 (직접 렌더) · 1 = 중간 (SMAA + 분름) · 2 = 높은 (+ GTAO 엑스브루전)
+// Measured on this scene at 1024x768: 0 -> 60fps, 1 -> 58fps, 2 -> 23fps. GTAO re-renders the
+// whole campus for depth and normals every frame, so it stays opt-in rather than the default.
+let GFX = isTouch ? 0 : 1;
+try { const g = localStorage.getItem('sejong3d.gfx'); if (g !== null) GFX = Math.max(0, Math.min(2, +g | 0)); } catch (_) {}
+const CAN_PP = renderer.capabilities.isWebGL2;
+let composer = null, gtaoPass = null, envRT = null;
+const ALLMATS = new Set(), AO_HIDE = [];
+
+// Bake the Sky shader into a prefiltered probe: without this every material has nothing to
+// reflect, which is what makes untextured boxes read as plastic.
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envSky = new Sky(); envSky.scale.setScalar(9000);
+const envScene = new THREE.Scene(); envScene.add(envSky);
+function bakeEnv(){
+  const u = envSky.material.uniforms;
+  u.turbidity.value = su.turbidity.value; u.rayleigh.value = su.rayleigh.value;
+  u.mieCoefficient.value = su.mieCoefficient.value; u.mieDirectionalG.value = su.mieDirectionalG.value;
+  u.sunPosition.value.copy(su.sunPosition.value);
+  if (envRT) envRT.dispose();
+  envRT = pmrem.fromScene(envScene, 0, 1, 20000);   // far must clear the 9000-unit sky box
+  scene.environment = envRT.texture;
+}
+function collectMats(){ scene.traverse(o => { const m = o.material; if (!m) return;
+  for (const x of (Array.isArray(m) ? m : [m])) if (x.isMeshStandardMaterial) ALLMATS.add(x); }); }
+function setEnvI(v){ ALLMATS.forEach(m => { m.envMapIntensity = v; }); }
+// GTAO rebuilds depth+normals with an override material, which turns alpha-cut fences and
+// wireframe nets into solid walls. Hide those (and the sky) for that pass only.
+function collectAO(){
+  AO_HIDE.length = 0; AO_HIDE.push(sky);
+  scene.traverse(o => {
+    if (o === sky || !(o.isMesh || o.isInstancedMesh || o.isPoints)) return;
+    const m = Array.isArray(o.material) ? o.material[0] : o.material; if (!m) return;
+    if (m.wireframe || m.alphaTest > 0 || m.isMeshBasicMaterial || m.isPointsMaterial || (m.transparent && m.opacity < .95)) AO_HIDE.push(o);
+  });
+}
+function buildComposer(){
+  if (composer) { composer.dispose(); composer = null; gtaoPass = null; }
+  if (GFX === 0 || !CAN_PP) return;
+  const w = innerWidth, h = innerHeight, pr = renderer.getPixelRatio();
+  composer = new EffectComposer(renderer);
+  composer.setPixelRatio(pr);
+  composer.addPass(new RenderPass(scene, camera));
+  if (GFX >= 2) {
+    gtaoPass = new GTAOPass(scene, camera, w, h);
+    gtaoPass.blendIntensity = .9;
+    gtaoPass.updateGtaoMaterial({ radius: 2, distanceExponent: 1.2, thickness: 1.5, scale: 1, samples: 16, screenSpaceRadius: false });
+    const _r = gtaoPass.render.bind(gtaoPass);
+    gtaoPass.render = (...a) => {
+      for (const o of AO_HIDE) { o.__vis = o.visible; o.visible = false; }
+      try { _r(...a); } finally { for (const o of AO_HIDE) o.visible = o.__vis; }
+    };
+    composer.addPass(gtaoPass);
+  }
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), .35, .6, 1.9));
+  composer.addPass(new SMAAPass(w * pr, h * pr));
+  composer.addPass(new OutputPass());   // tone mapping happens here: render targets stay linear HDR
+  composer.setSize(w, h);
+}
+function setGfx(g){
+  GFX = Math.max(0, Math.min(2, g | 0));
+  try { localStorage.setItem('sejong3d.gfx', GFX); } catch (_) {}
+  buildComposer();
+  document.querySelectorAll('[data-g]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.g === GFX)));
+}
 
 const facadeMats = [], winMats = [], lampMats = [], gymLights = [];
 const boxes = [], circles = [];
@@ -1355,9 +1438,9 @@ let stars;
 
 /* ---------- time-of-day presets ---------- */
 const PRESETS={
-  day:  { el:52, az:205, turb:2.5, ray:1.0, mie:.004, g:.8,  sunI:3.4, sunC:0xfff4e6, hs:0xcfe0ff, hg:0x7a6a4c, hi:1.35, exp:.55, fog:0xc6d4e2, lit:0,   win:1.0, lamp:0,   gym:18, star:0, int:.08, iwin:1.1 },
-  dusk: { el:21, az:252, turb:6.5, ray:2.4, mie:.007, g:.88, sunI:3.1, sunC:0xffc48a, hs:0xc4d2f4, hg:0x7a6244, hi:1.3, exp:.68,  fog:0xd8bfa6, lit:.3,  win:.8,  lamp:.9,  gym:32, star:0, int:.16, iwin:.75 },
-  night:{ el:-7, az:285, turb:2,   ray:.6,  mie:.003, g:.8,  sunI:.7, sunC:0x9fb4e0, hs:0x40528a, hg:0x221c16, hi:.8,  exp:1.15, fog:0x161c2a, lit:1.5, win:.06, lamp:3,   gym:70, star:1, moon:true, int:.5, iwin:.03 },
+  day:  { el:52, az:205, turb:2.5, ray:1.0, mie:.004, g:.8,  sunI:3.4, sunC:0xfff4e6, hs:0xcfe0ff, hg:0x7a6a4c, hi:1.35, exp:.55, fog:0xc6d4e2, lit:0,   win:1.0, lamp:0,   gym:18, star:0, int:.08, iwin:1.1, envI:.18 },
+  dusk: { el:21, az:252, turb:6.5, ray:2.4, mie:.007, g:.88, sunI:3.1, sunC:0xffc48a, hs:0xc4d2f4, hg:0x7a6244, hi:1.3, exp:.68,  fog:0xd8bfa6, lit:.3,  win:.8,  lamp:.9,  gym:32, star:0, int:.16, iwin:.75, envI:.12 },
+  night:{ el:-7, az:285, turb:2,   ray:.6,  mie:.003, g:.8,  sunI:.7, sunC:0x9fb4e0, hs:0x40528a, hg:0x221c16, hi:.8,  exp:1.15, fog:0x161c2a, lit:1.5, win:.06, lamp:3,   gym:70, star:1, moon:true, int:.5, iwin:.03, envI:.08 },
 };
 const sunDir=new V3();
 function applyPreset(k){
@@ -1371,6 +1454,7 @@ function applyPreset(k){
   renderer.toneMappingExposure=p.exp; scene.fog.color.set(p.fog);
   facadeMats.forEach(m=>m.emissiveIntensity=p.lit); winMats.forEach(m=>m.emissiveIntensity=p.win); lampMats.forEach(m=>m.emissiveIntensity=p.lamp); gymLights.forEach(l=>l.intensity=p.gym); interiorMats.forEach(m=>m.emissiveIntensity=p.int); innerWinMats.forEach(m=>m.emissiveIntensity=p.iwin);
   if(stars) stars.material.opacity=p.star;
+  bakeEnv(); setEnvI(p.envI);
   document.querySelectorAll('[data-t]').forEach(b=>b.setAttribute('aria-pressed', String(b.dataset.t===k)));
 }
 
@@ -1755,6 +1839,285 @@ function buildHero(){
   Object.assign(H,{ root, pivot, body, pelvis, spine, head });
   root.visible=false; scene.add(root); scene.add(H.blob);
 }
+
+/* ---------- optional rigged glTF character ----------
+   Any rigged humanoid glTF/GLB can replace the procedural student. Locomotion comes from the
+   model's own clips; the game-specific moves (jump, flight, punch, kick, meteor cast) have no
+   clips in any stock pack, so those keep using the hand-built poses, retargeted onto whatever
+   skeleton the model has and cross-faded in over the clip. Falls back to the procedural body
+   if the file is missing, has no skeleton, or fails to load. */
+const HERO = {
+  url: 'models/student.gltf',   // '' falls back to the built-in procedural student
+  anim: 'models/animations.glb',  // optional SECOND file holding only clips.
+                    // Character packs and animation libraries usually ship apart; as long as both
+                    // use the same rig the track names line up and no Blender round-trip is needed.
+  height: 1.75,     // the model is uniformly scaled until it is this tall, in metres
+  faceFix: 0,       // set to Math.PI if the model faces -Z instead of +Z
+  uniform: true,    // paint the school uniform over a bare base mesh
+  clips: { idle:['idle_loop','idle','breathing','tpose'], walk:['walk_loop','walk'],
+           run:['jog_fwd','sprint','run','jog'], jump:['jump_loop','jump','fall','air'] },
+};
+try { const u=localStorage.getItem('sejong3d.hero'); if(u) HERO.url=u;
+      const a=localStorage.getItem('sejong3d.heroAnim'); if(a) HERO.anim=a; } catch(_) {}
+// a clip from another file only drives this model if its track names match real nodes
+function clipFit(model, clip){
+  if(!HERO._names){ HERO._names=new Set(); model.traverse(o=>{ if(o.name) HERO._names.add(o.name); }); }
+  let hit=0; for(const t of clip.tracks){ if(HERO._names.has(t.name.split('.')[0])) hit++; }
+  return clip.tracks.length ? hit/clip.tracks.length : 0;
+}
+const GH = { ready:false, root:null, mixer:null, act:{}, bone:{}, axis:{} };
+// Mixamo exports dominate, so match its names first, then common alternatives.
+const BONE_KEYS = {
+  hips:['hips','pelvis','root'], spine:['spine03','spine2','spine02','chest','spine1','spine01','spine'], head:['head'],
+  clavL:['claviclel','leftshoulder','shoulderl'], clavR:['clavicler','rightshoulder','shoulderr'],
+  shoL:['leftarm','lupperarm','upperarml','arml'], shoR:['rightarm','rupperarm','upperarmr','armr'],
+  elbL:['leftforearm','lforearm','forearml','lowerarml'], elbR:['rightforearm','rforearm','forearmr','lowerarmr'],
+  hipL:['leftupleg','lthigh','thighl','upperlegl'], hipR:['rightupleg','rthigh','thighr','upperlegr'],
+  knL:['leftleg','lcalf','calfl','lowerlegl','shinl'], knR:['rightleg','rcalf','calfr','lowerlegr','shinr'],
+  ankL:['leftfoot','lfoot','footl'], ankR:['rightfoot','rfoot','footr'],
+};
+const normBone = n => n.toLowerCase().replace(/^mixamorig[:_]?/,'').replace(/[^a-z0-9]/g,'');
+function mapBones(skel){
+  const all=[]; skel.traverse(o=>{ if(o.isBone) all.push(o); });
+  const byName=new Map(all.map(b=>[normBone(b.name),b]));
+  for(const key in BONE_KEYS){
+    for(const want of BONE_KEYS[key]){
+      const hit=byName.get(want) || all.find(b=>normBone(b.name).endsWith(want));
+      if(hit){ GH.bone[key]=hit; break; }
+    }
+  }
+  return Object.keys(GH.bone).length;
+}
+// Record, in each bone's PARENT frame and in the rest pose, which direction the character's own
+// X/Y/Z axes point. Swinging a limb "forward" is then the same call on every rig.
+const _pq=new THREE.Quaternion(), _rq=new THREE.Quaternion();
+// Quaternion that takes a vector written in the CHARACTER's frame into this bone's parent frame.
+// It must go through GH.root, not through world space: the root carries the player's facing, so
+// world-space axes would drift with `face` and a forward kick would swing out sideways.
+function relToRoot(bone){
+  GH.root.getWorldQuaternion(_rq);
+  bone.parent.getWorldQuaternion(_pq);
+  return new THREE.Quaternion().copy(_pq).invert().multiply(_rq);
+}
+function captureAxes(){
+  GH.root.updateWorldMatrix(true,true);
+  for(const key in GH.bone){
+    const b=GH.bone[key]; if(!b.parent) continue;
+    const r=relToRoot(b);
+    GH.axis[key]={ x:new V3(1,0,0).applyQuaternion(r).normalize(),
+                   y:new V3(0,1,0).applyQuaternion(r).normalize(),
+                   z:new V3(0,0,1).applyQuaternion(r).normalize() };
+  }
+}
+const _wa=new V3(), _wb=new V3();
+
+/* ---------- painting the school uniform onto a bare base mesh ----------
+   The CC0 base meshes ship nude, and their UV islands have overlapping bounding boxes, so you
+   cannot just fill rectangles. Instead every triangle is rasterised into UV space and each texel
+   is coloured from the 3D point that maps to it. Model-space metres, Y up, +Z forward.
+   Works on any rigged humanoid, not just this pack. */
+const UNI={
+  shoe:[244,244,242], sole:[141,146,152], trouser:[58,61,71], belt:[32,30,36],
+  blazer:[40,49,79],  shirt:[242,241,236], tie:[124,34,54], skin:[232,193,159], hair:[22,17,14], dark:[20,18,24],
+};
+function uniformAt(x,y,z,H){
+  const t=v=>v*H/1.81;                     // landmarks were read off a 1.81 m reference body
+  const ax=Math.abs(x), mix=(a,b,k)=>[a[0]+(b[0]-a[0])*k,a[1]+(b[1]-a[1])*k,a[2]+(b[2]-a[2])*k];
+  if(ax>t(.22)){                           // ---- arms: judged by reach, not height
+    if(ax>t(.655)) return UNI.skin;                       // hand
+    if(ax>t(.60)) return UNI.shirt;                       // cuff peeking out
+    return UNI.blazer;                                    // sleeve
+  }
+  if(y<t(.035)) return UNI.sole;
+  if(y<t(.12))  return UNI.shoe;
+  if(y<t(1.06)) return UNI.trouser;
+  if(y<t(1.10)) return UNI.belt;
+  if(y<t(1.50)){                           // ---- torso
+    if(z>t(.01) && y>t(1.24)){                            // the blazer only opens near the collar
+      const open=Math.pow((y-t(1.24))/(t(1.50)-t(1.24)),1.5);   // narrow wedge, not a triangle
+      const half=t(.009)+open*t(.040);
+      if(ax<t(.021) && y>t(1.27)) return UNI.tie;
+      if(ax<half)   return UNI.shirt;
+      if(ax<half+t(.018)) return mix(UNI.blazer,UNI.dark,.4);    // lapel edge
+    }
+    return UNI.blazer;
+  }
+  // collar: a band around the neck only, never spreading out over the shoulders
+  if(y<t(1.60)) return (ax<t(.070) && z>t(.015))?UNI.shirt:UNI.blazer;
+  // ---- head: the face is part of this same mesh, so the features get painted here too
+  if(z>t(.02) && y<t(1.745)){
+    const eyeY=t(1.694), dx=(ax-t(.042))/t(.017), dy=(y-eyeY)/t(.009);
+    if(dx*dx+dy*dy<1) return UNI.dark;                                        // eye
+    const bY=t(1.716);
+    if(ax>t(.017) && ax<t(.070) && y>bY && y<bY+t(.010)) return UNI.hair;     // brow
+    if(ax<t(.025) && y>t(1.640) && y<t(1.648)) return mix(UNI.skin,UNI.tie,.5); // mouth
+  }
+  if(y>t(1.745) || (y>t(1.655) && z<0) || (y>t(1.700) && ax>t(.062))) return UNI.hair;
+  return UNI.skin;
+}
+function bakeUniform(mesh,size){
+  const geo=mesh.geometry, P=geo.attributes.position, UVA=geo.attributes.uv, ix=geo.index;
+  if(!UVA) return null;
+  let H=0; for(let i=0;i<P.count;i++) H=Math.max(H,P.getY(i));
+  const c=cvs(size,size), g=c.getContext('2d');
+  const im=g.createImageData(size,size), D=im.data, cov=new Uint8Array(size*size);
+  const n=ix?ix.count:P.count;
+  for(let t=0;t<n;t+=3){
+    const i0=ix?ix.getX(t):t, i1=ix?ix.getX(t+1):t+1, i2=ix?ix.getX(t+2):t+2;
+    const u0=UVA.getX(i0)*size, v0=UVA.getY(i0)*size, u1=UVA.getX(i1)*size, v1=UVA.getY(i1)*size,
+          u2=UVA.getX(i2)*size, v2=UVA.getY(i2)*size;
+    const den=(v1-v2)*(u0-u2)+(u2-u1)*(v0-v2); if(Math.abs(den)<1e-9) continue;
+    const x0=Math.max(0,Math.floor(Math.min(u0,u1,u2))-1), x1=Math.min(size-1,Math.ceil(Math.max(u0,u1,u2))+1);
+    const y0=Math.max(0,Math.floor(Math.min(v0,v1,v2))-1), y1=Math.min(size-1,Math.ceil(Math.max(v0,v1,v2))+1);
+    for(let yy=y0;yy<=y1;yy++) for(let xx=x0;xx<=x1;xx++){
+      const px=xx+.5, py=yy+.5;
+      let l0=((v1-v2)*(px-u2)+(u2-u1)*(py-v2))/den, l1=((v2-v0)*(px-u2)+(u0-u2)*(py-v2))/den, l2=1-l0-l1;
+      if(l0<-.03||l1<-.03||l2<-.03) continue;             // a little slop so island edges fill
+      l0=clamp(l0,0,1); l1=clamp(l1,0,1); l2=clamp(l2,0,1); const sw=l0+l1+l2||1;
+      const X=(P.getX(i0)*l0+P.getX(i1)*l1+P.getX(i2)*l2)/sw,
+            Y=(P.getY(i0)*l0+P.getY(i1)*l1+P.getY(i2)*l2)/sw,
+            Z=(P.getZ(i0)*l0+P.getZ(i1)*l1+P.getZ(i2)*l2)/sw;
+      const col=uniformAt(X,Y,Z,H), sh=.93+.14*R();       // weave grain so cloth is not dead flat
+      const o=(yy*size+xx)*4;
+      D[o]=clamp(col[0]*sh,0,255); D[o+1]=clamp(col[1]*sh,0,255); D[o+2]=clamp(col[2]*sh,0,255); D[o+3]=255;
+      cov[yy*size+xx]=1;
+    }
+  }
+  // bleed outwards so bilinear filtering never samples empty space at an island border
+  for(let pass=0;pass<4;pass++){
+    const prev=cov.slice();
+    for(let yy=0;yy<size;yy++) for(let xx=0;xx<size;xx++){
+      if(prev[yy*size+xx]) continue;
+      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const nx=xx+dx, ny=yy+dy; if(nx<0||ny<0||nx>=size||ny>=size||!prev[ny*size+nx]) continue;
+        const o=(yy*size+xx)*4, q=(ny*size+nx)*4;
+        D[o]=D[q]; D[o+1]=D[q+1]; D[o+2]=D[q+2]; D[o+3]=255; cov[yy*size+xx]=1; break;
+      }
+    }
+  }
+  g.putImageData(im,0,0);
+  const tex=ctex(c); tex.flipY=false;                     // glTF UVs have their origin top-left
+  return tex;
+}
+function dressHero(model){
+  let body=null, rest=[];
+  model.traverse(o=>{ if(o.isSkinnedMesh||o.isMesh){
+    if(!body || o.geometry.attributes.position.count>body.geometry.attributes.position.count){ if(body) rest.push(body); body=o; }
+    else rest.push(o); } });
+  if(!body) return false;
+  const tex=bakeUniform(body,1024); if(!tex) return false;
+  const m=Array.isArray(body.material)?body.material[0]:body.material;
+  m.map=tex; m.color.set(0xffffff); m.roughness=.82; m.metalness=0; m.needsUpdate=true;
+  // the pack's separate eye and brow planes have no texture of their own and read as a dark
+  // band across the face; the painted features above replace them
+  for(const o of rest) o.visible=false;
+  return true;
+}
+// Packs ship in T-pose (arms straight out), but every hand-built pose here was authored against
+// arms hanging down. Rotate the upper arms down once, then treat THAT as the rest pose.
+const _IDQ=new THREE.Quaternion();
+function relaxTPose(){
+  for(const [clav,sho,elb,sgn] of [['clavL','shoL','elbL',1],['clavR','shoR','elbR',-1]]){
+    const e=GH.bone[elb]; if(!e) continue;
+    const tgt=new V3(sgn*Math.cos(1.2),-Math.sin(1.2),0).normalize();
+    // Let the clavicle take a share of the drop. Rotating the upper arm alone by ~75 degrees
+    // stretches the deltoid skin into a visible spike, because those vertices are partly
+    // weighted to the clavicle, which would not have moved.
+    for(const [key,share] of [[clav,.3],[sho,1]]){
+      const b=GH.bone[key]; if(!b||!b.parent) continue;
+      GH.root.updateWorldMatrix(true,true);
+      b.getWorldPosition(_wa); e.getWorldPosition(_wb);
+      const cur=_wb.sub(_wa); if(cur.lengthSq()<1e-8) continue;
+      GH.root.getWorldQuaternion(_rq);
+      cur.applyQuaternion(_rq.clone().invert()).normalize();        // into the character's frame
+      if(Math.atan2(-cur.y,Math.hypot(cur.x,cur.z))>1.0) break;     // already hanging down
+      const rel=relToRoot(b);
+      const q=new THREE.Quaternion().setFromUnitVectors(
+        cur.applyQuaternion(rel).normalize(), tgt.clone().applyQuaternion(rel).normalize());
+      if(share<1) q.slerp(_IDQ, 1-share);
+      b.quaternion.premultiply(q);
+    }
+  }
+  GH.root.updateWorldMatrix(true,true);
+}
+// Libraries ship dozens of variants, so a bare substring match grabs Crouch_Idle_Loop before
+// Idle_Loop. Score instead: earlier hints win, then names that start with the hint, then short ones.
+function pickClip(names, want){
+  let best=null, score=-1;
+  for(const n of names){ const ln=n.toLowerCase();
+    for(let i=0;i<want.length;i++){ const w=want[i]; if(!ln.includes(w)) continue;
+      const sc=(want.length-i)*1000 + (ln.startsWith(w)?500:0) - n.length;
+      if(sc>score){ score=sc; best=n; } } }
+  return best;
+}
+async function loadHero(url){
+  if(!url) return false;
+  try{
+    const gltf=await new GLTFLoader().loadAsync(url);
+    const model=gltf.scene;
+    let skinned=null; model.traverse(o=>{ if(o.isSkinnedMesh && !skinned) skinned=o; });
+    if(!skinned){ console.warn('[hero] no SkinnedMesh in', url); return false; }
+    model.traverse(o=>{ if(o.isMesh||o.isSkinnedMesh){ o.castShadow=true; o.receiveShadow=true; o.frustumCulled=false; } });
+    // Box3.setFromObject walks matrixWorld, which is still stale right after load; without this
+    // update a rig whose nodes carry a 0.01 scale measures ~100x too small and comes out giant.
+    model.updateMatrixWorld(true);
+    const box=new THREE.Box3().setFromObject(model), h=box.max.y-box.min.y;
+    let sc=(h>1e-4?HERO.height/h:1);
+    if(sc<.001||sc>1000){ console.warn('[hero] implausible scale',sc,'from height',h,'- using 1'); sc=1; }
+    model.scale.setScalar(sc);
+    model.position.y=-box.min.y*sc; model.rotation.y=HERO.faceFix;
+    GH.size={ raw:+h.toFixed(3), scale:+sc.toFixed(4) };
+    GH.root=model; H.body.add(model);
+    if(mapBones(model)<6){ console.warn('[hero] too few bones recognised; keeping the procedural body'); H.body.remove(model); return false; }
+    relaxTPose();
+    captureAxes();
+    // With no clip driving them the bones keep whatever was written last frame, so the swings
+    // would accumulate. Cache the rest pose and restore it each frame instead.
+    GH.rest=Object.values(GH.bone).map(b=>[b,b.quaternion.clone()]);
+    GH.mixer=new THREE.AnimationMixer(model);
+    HERO._names=null;
+    let clips=gltf.animations.slice();
+    if(HERO.anim){
+      try{
+        const ag=await new GLTFLoader().loadAsync(HERO.anim);
+        const kept=ag.animations.filter(c=>clipFit(model,c)>=.3);
+        if(!kept.length) console.warn('[hero] none of the',ag.animations.length,'clips in',HERO.anim,'match this rig\'s bone names');
+        clips=clips.concat(kept);
+      }catch(e){ console.warn('[hero] animation file failed:', e.message); }
+    }
+    GH.clipNames=clips.map(c=>c.name);
+    for(const key in HERO.clips){
+      const n=pickClip(GH.clipNames,HERO.clips[key]); if(!n) continue;
+      const a=GH.mixer.clipAction(clips.find(c=>c.name===n));
+      a.play(); a.setEffectiveWeight(0); a.enabled=true; GH.act[key]=a; GH.used=GH.used||{}; GH.used[key]=n;
+    }
+    if(!GH.act.idle && clips.length){ const a=GH.mixer.clipAction(clips[0]); a.play(); a.setEffectiveWeight(0); GH.act.idle=a; }
+    GH.hasClips=!!(GH.act.idle||GH.act.walk||GH.act.run);
+    if(HERO.uniform) try{ dressHero(model); }catch(e){ console.warn('[hero] uniform bake failed:', e.message); }
+    H.pelvis.visible=false;                       // hide the procedural body, keep its transforms
+    GH.ready=true;
+    collectAO(); collectMats(); setEnvI(PRESETS[state.preset].envI);
+    console.info('[hero]', url, '· bones', Object.keys(GH.bone).length, '· clips', JSON.stringify(GH.used||{}), '· available', GH.clipNames.length);
+    return true;
+  }catch(e){ console.warn('[hero] load failed:', e.message); return false; }
+}
+// swing a mapped bone about the character's own axes, on top of whatever the clip wrote
+const _sq=new THREE.Quaternion();
+function swing(key,rx,ry,rz,w){
+  const b=GH.bone[key], a=GH.axis[key]; if(!b||!a||w<=0) return;
+  if(rx) b.quaternion.premultiply(_sq.setFromAxisAngle(a.x,rx*w));
+  if(ry) b.quaternion.premultiply(_sq.setFromAxisAngle(a.y,ry*w));
+  if(rz) b.quaternion.premultiply(_sq.setFromAxisAngle(a.z,rz*w));
+}
+function poseBones(P,w){
+  swing('hipL',P.thL,0,0,w); swing('hipR',P.thR,0,0,w);
+  swing('knL',P.knL,0,0,w);  swing('knR',P.knR,0,0,w);
+  swing('ankL',P.anL,0,0,w); swing('ankR',P.anR,0,0,w);
+  swing('shoL',P.sxL,0,P.szL,w); swing('shoR',P.sxR,0,P.szR,w);
+  swing('elbL',P.elL,0,0,w);  swing('elbR',P.elR,0,0,w);
+  swing('spine',P.spX,P.spY,0,w); swing('hips',0,P.pvY,0,w);
+}
+
 const P={}, Q={};
 function poseZero(o){ for(const k of ['thL','thR','knL','knR','anL','anR','sxL','sxR','szL','szR','elL','elR','spX','spY','pvY','bob','pvX','pvZ']) o[k]=0; return o; }
 function mixP(a,b,k){ if(k<=0) return; for(const key in b) a[key]=lerp(a[key],b[key],k); }
@@ -1790,16 +2153,53 @@ function animHero(dt,hs){
   if(punchT>0){ const t=1-punchT/PUNCH_D, R=punchSide, sx=R?'sxR':'sxL', el=R?'elR':'elL', gx=R?'sxL':'sxR', ge=R?'elL':'elR';
     let ax, ae, w, tw; if(t<.2){ w=t/.2; ax=-.45; ae=-1.95; tw=-.15; } else if(t<.4){ w=1; const k=(t-.2)/.2, e=1-(1-k)*(1-k); ax=lerp(-.45,-1.55,e); ae=lerp(-1.95,-.05,e); tw=lerp(-.15,.5,e); } else { w=1-(t-.4)/.6; ax=-1.55; ae=-.05; tw=.5; }
     P[sx]=lerp(P[sx],ax,w); P[el]=lerp(P[el],ae,w); P[gx]=lerp(P[gx],-.75,w); P[ge]=lerp(P[ge],-2.1,w); P.spY=lerp(P.spY,(R?1:-1)*tw,w); P[R?'szR':'szL']=lerp(P[R?'szR':'szL'],(R?1:-1)*.12,w); P.spX=lerp(P.spX,.1,w); }
+  // kick: plant, swing the right leg through the ball, follow through
+  if(kickT>0){ const t=1-kickT/KICK_D; let th,kn,w;
+    if(t<.25){ w=t/.25; th=.6; kn=1.05; }
+    else if(t<.45){ w=1; const k=(t-.25)/.2, e=1-(1-k)*(1-k); th=lerp(.6,-1.3,e); kn=lerp(1.05,.06,e); }
+    else { w=1-(t-.45)/.55; th=-1.3; kn=.06; }
+    P.thR=lerp(P.thR,th,w); P.knR=lerp(P.knR,kn,w); P.anR=lerp(P.anR,-.3,w);
+    P.thL=lerp(P.thL,-.16,w); P.knL=lerp(P.knL,.24,w);
+    P.spX=lerp(P.spX,-.14,w); P.spY=lerp(P.spY,.24,w);
+    P.sxL=lerp(P.sxL,-.95,w); P.sxR=lerp(P.sxR,.4,w); P.elL=lerp(P.elL,-.5,w); }
   // lean into turns
   const tr=wrapA(face-prevFace)/Math.max(dt,1e-3); prevFace=face; turnS+=(tr-turnS)*ex(8);
   P.pvZ=-clamp(turnS*Math.max(hs,flyK*10)*.03,-.32,.32);
-  const [hL,hR]=H.hip, [kL,kR]=H.knee, [aL,aR]=H.ank, [sL,sR]=H.sho, [eL,eR]=H.elb;
-  hL.rotation.x=P.thL; hR.rotation.x=P.thR; kL.rotation.x=P.knL; kR.rotation.x=P.knR; aL.rotation.x=P.anL; aR.rotation.x=P.anR;
-  sL.rotation.set(P.sxL,0,P.szL); sR.rotation.set(P.sxR,0,P.szR); eL.rotation.x=P.elL; eR.rotation.x=P.elR;
-  H.spine.rotation.set(P.spX,P.spY,0); H.pelvis.rotation.y=P.pvY; H.body.position.y=-1+P.bob; H.pivot.rotation.set(P.pvX,0,P.pvZ);
-  // head follows where the camera looks (unless the camera is in front of the face)
   const d=wrapA(yaw+Math.PI-face), want=Math.abs(d)<1.9?clamp(d,-1,1)*.65:0; headY+=(want-headY)*ex(6);
-  H.head.rotation.set(clamp(-pitch*.35,-.35,.4)-P.spX*.5,headY,0);
+  if(GH.ready){
+    const ACT=GH.act;
+    const ramp=(t,D)=>t>0?Math.min(1,(D-t)/.07,t/.09):0;
+    let aw;
+    if(GH.hasClips){
+      // how strongly the hand-built pose should take over from the clips this frame
+      aw=clamp(Math.max(ACT.jump?0:airK, flyK, ramp(punchT,PUNCH_D), ramp(kickT,KICK_D),
+                        castT>0?Math.min(1,castT/.2,(1.1-castT)/.1):0),0,1);
+      // locomotion from the model's own clips, speed-matched so the feet do not skate, and
+      // faded down while a procedural action runs so the two do not both drive the legs
+      const lw=1-aw*.85, iw=(1-amp)*lw, ww=amp*(1-runK)*lw, rw=amp*runK*lw;
+      if(ACT.idle) ACT.idle.setEffectiveWeight(iw);
+      if(ACT.walk){ ACT.walk.setEffectiveWeight(ww); ACT.walk.timeScale=clamp(hs/WALK,.45,2.2); }
+      if(ACT.run){ ACT.run.setEffectiveWeight(rw); ACT.run.timeScale=clamp(hs/RUN,.5,1.9); }
+      if(ACT.jump) ACT.jump.setEffectiveWeight(airK*lw);
+      GH.mixer.update(dt);
+    } else {
+      // a character pack with no animation library of its own: reset to rest, then run the
+      // whole walk/run/jump/fly/punch/kick rig by hand on this skeleton
+      for(const r of GH.rest) r[0].quaternion.copy(r[1]);
+      aw=1;
+    }
+    if(aw>.001) poseBones(P,aw);
+    if(GH.bone.head) swing('head',clamp(-pitch*.35,-.35,.4)*.8,headY,0,1);
+    H.body.position.y=GH.hasClips?-1:-1+P.bob;              // clips carry their own bob
+    H.pivot.rotation.set(P.pvX*Math.max(aw,flyK),0,P.pvZ);
+  } else {
+    const [hL,hR]=H.hip, [kL,kR]=H.knee, [aL,aR]=H.ank, [sL,sR]=H.sho, [eL,eR]=H.elb;
+    hL.rotation.x=P.thL; hR.rotation.x=P.thR; kL.rotation.x=P.knL; kR.rotation.x=P.knR; aL.rotation.x=P.anL; aR.rotation.x=P.anR;
+    sL.rotation.set(P.sxL,0,P.szL); sR.rotation.set(P.sxR,0,P.szR); eL.rotation.x=P.elL; eR.rotation.x=P.elR;
+    H.spine.rotation.set(P.spX,P.spY,0); H.pelvis.rotation.y=P.pvY; H.body.position.y=-1+P.bob; H.pivot.rotation.set(P.pvX,0,P.pvZ);
+    // head follows where the camera looks (unless the camera is in front of the face)
+    H.head.rotation.set(clamp(-pitch*.35,-.35,.4)-P.spX*.5,headY,0);
+  }
   H.root.position.set(pos.x,pos.y-EYE,pos.z); H.root.rotation.y=face;
   const gy=groundAt(pos.x,pos.z,pos.y-EYE+.05), hgt=pos.y-EYE-gy, bs=clamp(1-hgt/8,0,1);
   H.blob.visible=H.root.visible && bs>0; H.blob.position.set(pos.x,gy+.03,pos.z); H.blob.scale.setScalar(.9+.6*(1-bs)); H.blob.material.opacity=bs*.9;
@@ -1970,6 +2370,8 @@ addEventListener('keydown',e=>{ if(e.target.closest && e.target.closest('input,t
     if(e.code==='KeyF' && MODE==='meteor' && !DRIVE){ fly=!fly; if(fly) vel.y=Math.max(vel.y,4); }
     if(e.code==='KeyP') savePoint();
     if(e.code==='KeyE') useCar();
+    if(e.code==='KeyB'){ const bx=pos.x-Math.sin(yaw)*1.3, bz=pos.z-Math.cos(yaw)*1.3;
+      resetBall(new V3(bx, groundAt(bx,bz,pos.y-EYE)+BALL.r+.02, bz)); toast('⚽ 공을 가지고 왔어요'); }
     if(e.code==='KeyG') launch(false);
     if(e.code==='KeyH') launch(true);
     if(e.code==='Space' && !fly && !DRIVE && onGround){ vel.y=5.4; onGround=false; }
@@ -1981,7 +2383,7 @@ addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; });
 
 let locked=false, dragging=false, lastX=0, lastY=0;
 function lockPointer(){ if(isTouch || !canvas.requestPointerLock) return; try{ const r=canvas.requestPointerLock(); if(r&&r.catch) r.catch(()=>{}); }catch(_){} }
-function primary(big){ if(!playing) return; if(DRIVE){ horn(); return; } if(MODE==='meteor' && fly){ launch(big); return; } punch(); }
+function primary(big){ if(!playing) return; if(DRIVE){ horn(); return; } if(MODE==='meteor' && fly){ launch(big); return; } if(nearBall()){ kick(); return; } punch(); }
 canvas.addEventListener('mousedown',e=>{ if(!playing) return; if(locked && e.button===0){ primary(e.shiftKey); return; } dragging=true; lastX=e.clientX; lastY=e.clientY; if(!locked) lockPointer(); });
 addEventListener('mouseup',()=>dragging=false);
 addEventListener('mousemove',e=>{ if(!playing) return; let dx=0,dy=0;
@@ -2004,8 +2406,8 @@ $('#tfly').addEventListener('click',()=>{ if(MODE!=='meteor'||DRIVE) return; fly
 
 /* ---------- modes, start screen, pause ---------- */
 const KEYS={
-  walk:{ hint:'<b>W A S D</b> 걷기 <b>Shift</b> 달리기 <b>Space</b> 점프 <b>클릭</b> 주먹 <b>E</b> 차 타기 <b>Esc</b> 메뉴',
-    list:[['마우스','시점 돌리기 (화면 클릭하면 고정)'],['W A S D','걷기 · Shift 누르면 달리기'],['Space','점프'],['클릭','보는 쪽으로 주먹 (왼손·오른손 번갈아)'],['E','차 가까이에서 타기·내리기'],['운전','W/S 가속·후진 · A/D 핸들 · Space 브레이크 · Shift 부스트 · 클릭 경적'],['P','지금 화면을 사진 맞춤 지점으로 저장'],['Esc · M','메뉴']] },
+  walk:{ hint:'<b>W A S D</b> 걷기 <b>Shift</b> 달리기 <b>Space</b> 점프 <b>클릭</b> 주먹·공 차기 <b>B</b> 공 가지고 오기 <b>E</b> 차 타기 <b>Esc</b> 메뉴',
+    list:[['마우스','시점 돌리기 (화면 클릭하면 고정)'],['W A S D','걷기 · Shift 누르면 달리기'],['Space','점프'],['클릭','보는 쪽으로 주먹 · 공 옆에서는 슛 (Shift 강슛)'],['B','공을 내 발 앞으로 가지고 오기'],['E','차 가까이에서 타기·내리기'],['운전','W/S 가속·후진 · A/D 핸들 · Space 브레이크 · Shift 부스트 · 클릭 경적'],['P','지금 화면을 사진 맞춤 지점으로 저장'],['Esc · M','메뉴']] },
   meteor:{ hint:'<b>W A S D</b> 이동 <b>F</b> 비행 <b>클릭</b> 날 때 운석 · 땅에선 주먹 <b>G</b>/<b>H</b> 운석 <b>E</b> 차 <b>Esc</b> 메뉴',
     list:[['마우스','시점 돌리기 · 화면 가운데가 조준점'],['W A S D','이동 · Shift 빠르게'],['F','비행 켜기·끄기 (Space 위, C 아래)'],['클릭','날고 있을 땐 운석 · 땅에서는 주먹'],['G · H','어디서든 운석 · 거대 운석'],['E','차 타기·내리기 (운석 맞으면 차가 날아가요)'],['지도','누르면 그곳으로 이동'],['Esc · M','메뉴']] },
 };
@@ -2029,6 +2431,7 @@ $('#resumeBtn').addEventListener('click',resume);
 $('#titleBtn').addEventListener('click',toTitle);
 $('#menuBtn').addEventListener('click',e=>{ e.stopPropagation(); pause(); });
 document.querySelectorAll('[data-t]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); applyPreset(b.dataset.t); }));
+document.querySelectorAll('[data-g]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); setGfx(+b.dataset.g); }));
 
 /* ---------- minimap ---------- */
 const MM={x0:110,y0:60,x1:810,y1:960}; const mmc=$('#mmc'), mg=mmc.getContext('2d'); let mmStatic;
@@ -2147,6 +2550,114 @@ $('#copyPts').addEventListener('click',()=>{
   try{ navigator.clipboard.writeText(txt).then(()=>toast('지점 목록을 복사했어요'),fallback); }catch(_){ fallback(); }
 });
 
+/* ---------- soccer on the artificial-turf field ---------- */
+const FIELD=rectOf([452,442,690,800]);           // the rect buildField() paints
+const GOALM=3, GOALHW=3.66, GOALH=2.44;          // line margin, half the mouth, crossbar
+const BALL={ p:new V3(), v:new V3(), r:.112, m:null };
+const SOC={ score:0, kicks:0, cool:0 };
+const KICK_D=.46; let kickT=0;
+
+// a truncated-icosahedron look: the 12 icosahedron vertices painted onto an equirect map,
+// with the horizontal radius divided by sin(theta) to undo the projection's stretch
+function ballTex(){
+  const W=1024,H=512, c=cvs(W,H), g=c.getContext('2d');
+  g.fillStyle='#f5f5f1'; g.fillRect(0,0,W,H);
+  const t=(1+Math.sqrt(5))/2, V=[];
+  for(const [a,b] of [[1,t],[-1,t],[1,-t],[-1,-t]]) for(const k of [0,1,2]){ const v=[0,0,0]; v[k]=a; v[(k+1)%3]=b; V.push(v); }
+  for(const v of V){
+    const L=Math.hypot(v[0],v[1],v[2]), x=v[0]/L, y=v[1]/L, z=v[2]/L;
+    const th=Math.acos(Math.max(-1,Math.min(1,y))), ph=Math.atan2(z,x);
+    const cy=th/Math.PI*H, cx=(ph/(2*Math.PI)+.5)*W, ry=44, rx=ry/Math.max(.3,Math.sin(th));
+    for(const du of [-W,0,W]){
+      g.fillStyle='#17171c'; g.beginPath();
+      for(let i=0;i<5;i++){ const a2=i/5*6.2832-Math.PI/2, px=cx+du+Math.cos(a2)*rx, py=cy+Math.sin(a2)*ry; i?g.lineTo(px,py):g.moveTo(px,py); }
+      g.closePath(); g.fill();
+    }
+  }
+  for(let i=0;i<2600;i++){ g.fillStyle=`rgba(${R()<.5?'255,255,255':'90,90,95'},.07)`; g.fillRect(R()*W,R()*H,3,3); }
+  return c;
+}
+function buildBall(){
+  BALL.m=new THREE.Mesh(new THREE.SphereGeometry(BALL.r,30,22), mat(0xffffff,{ map:ctex(ballTex()), roughness:.48 }));
+  BALL.m.castShadow=true; BALL.m.receiveShadow=true; scene.add(BALL.m); resetBall();
+}
+function resetBall(at){
+  if(at) BALL.p.copy(at); else BALL.p.set(FIELD.cx, BALL.r, FIELD.cz);
+  BALL.v.set(0,0,0); SOC.cool=0; if(BALL.m) BALL.m.position.copy(BALL.p);
+}
+function nearBall(){ if(!BALL.m) return false;
+  return Math.hypot(BALL.p.x-pos.x,BALL.p.z-pos.z)<1.9 && Math.abs(BALL.p.y-(pos.y-EYE))<1.6; }
+function kick(){ if(kickT>0||fly||DRIVE) return; kickT=KICK_D; whoosh(); }
+function kickHit(){
+  if(!BALL.m || Math.hypot(BALL.p.x-pos.x,BALL.p.z-pos.z)>2.2) return;
+  const run=keys.ShiftLeft||keys.ShiftRight, pw=run?21:15.5, cp=Math.cos(pitch);
+  BALL.v.set(-Math.sin(yaw)*cp*pw, Math.max(1.8, Math.sin(pitch)*pw+3.4), -Math.cos(yaw)*cp*pw);
+  SOC.kicks++; ballSound(1,false); shake=Math.max(shake,.012);
+}
+function scoreGoal(){ SOC.score++; SOC.cool=1.4; goalSound(); toast(`⚽ 골! ${SOC.score}골`); }
+const _bAx=new V3(), _bQ=new THREE.Quaternion();
+function updateBall(dt){
+  const b=BALL; if(!b.m) return;
+  if(SOC.cool>0){ SOC.cool-=dt; if(SOC.cool<=0){ resetBall(); return; } }
+  // dribble: walking into the ball shoves it along the contact normal
+  if(!fly && !DRIVE){
+    const dx=b.p.x-pos.x, dz=b.p.z-pos.z, d=Math.hypot(dx,dz), feet=pos.y-EYE;
+    if(d<RAD+b.r+.14 && b.p.y-b.r<feet+1.3 && b.p.y+b.r>feet-.4){
+      const hs=Math.hypot(vel.x,vel.z), nx=d>1e-4?dx/d:Math.sin(face), nz=d>1e-4?dz/d:Math.cos(face);
+      const push=Math.max(1.5,hs*2.0);
+      b.v.x=nx*push; b.v.z=nz*push; if(b.v.y<.3) b.v.y+=.5;
+      b.p.x=pos.x+nx*(RAD+b.r+.15); b.p.z=pos.z+nz*(RAD+b.r+.15);
+    }
+  }
+  const pz=b.p.z, px=b.p.x;
+  b.v.y-=18*dt;
+  const air=Math.exp(-.3*dt); b.v.x*=air; b.v.z*=air; b.v.y*=air;
+  b.p.addScaledVector(b.v,dt);
+  // walls, kerbs, slabs
+  for(const bx of boxes){
+    if(b.p.y-b.r>bx.top-.05) continue; if(bx.bottom!==undefined && b.p.y<bx.bottom) continue;
+    const cx=Math.max(bx.x0,Math.min(b.p.x,bx.x1)), cz=Math.max(bx.z0,Math.min(b.p.z,bx.z1));
+    let dx=b.p.x-cx, dz=b.p.z-cz; const d2=dx*dx+dz*dz;
+    if(d2<b.r*b.r && d2>1e-8){ const d=Math.sqrt(d2); dx/=d; dz/=d; b.p.x=cx+dx*b.r; b.p.z=cz+dz*b.r;
+      const vn=b.v.x*dx+b.v.z*dz; if(vn<0){ b.v.x-=1.55*vn*dx; b.v.z-=1.55*vn*dz; if(vn<-2.5) ballSound(Math.min(1,-vn/9),false); } }
+  }
+  // trunks, pillars and the goalposts (which are registered as circles)
+  for(const c of circles){
+    const dx=b.p.x-c.x, dz=b.p.z-c.z, rr2=c.r+b.r, d2=dx*dx+dz*dz;
+    if(d2<rr2*rr2 && d2>1e-8){ const d=Math.sqrt(d2), nx=dx/d, nz=dz/d; b.p.x=c.x+nx*rr2; b.p.z=c.z+nz*rr2;
+      const vn=b.v.x*nx+b.v.z*nz; if(vn<0){ b.v.x-=1.75*vn*nx; b.v.z-=1.75*vn*nz; if(vn<-2.5) ballSound(Math.min(1,-vn/8),c.r<.2); } }
+  }
+  // ground / floor slabs / stairs
+  const gy=groundAt(b.p.x,b.p.z,b.p.y-b.r)+b.r;
+  if(b.p.y<=gy){
+    b.p.y=gy;
+    if(b.v.y<-.45){ ballSound(Math.min(1,-b.v.y/10),false); b.v.y=-b.v.y*.52; } else b.v.y=0;
+    const f=Math.exp(-1.5*dt); b.v.x*=f; b.v.z*=f;
+    if(Math.hypot(b.v.x,b.v.z)<.08){ b.v.x=0; b.v.z=0; }
+  }
+  // goal: crossed a goal line between the posts and under the bar
+  if(SOC.cool<=0 && Math.abs(b.p.x-FIELD.cx)<GOALHW-.04 && b.p.y<GOALH-.03){
+    const n=FIELD.z0+GOALM, sth=FIELD.z1-GOALM;
+    if((pz>n && b.p.z<=n) || (pz<sth && b.p.z>=sth)) scoreGoal();
+  }
+  if(b.p.y<-40 || Math.abs(b.p.x)>430 || Math.abs(b.p.z)>430) resetBall();
+  // roll: spin about the axis perpendicular to travel, by distance / circumference
+  const mx=b.p.x-px, mz=b.p.z-pz, md=Math.hypot(mx,mz);
+  if(md>1e-5){ _bAx.set(mz/md,0,-mx/md); _bQ.setFromAxisAngle(_bAx, md/b.r); b.m.quaternion.premultiply(_bQ); }
+  b.m.position.copy(b.p);
+}
+function ballSound(pw,metal){ const ac=audio(); if(!ac) return; const sp=spot(BALL.m.position,5,1,.2,0), t=sp.t;
+  const s=srcOf(BUF.white,1,false), f=filt(metal?'bandpass':'lowpass',metal?1250:900,metal?6:1.1), g=ac.createGain();
+  env(g,t,.002,(metal?.22:.4)*pw,metal?.26:.1); s.connect(f).connect(g).connect(sp.mix); s.start(t,Math.random()*2); s.stop(t+.35);
+  const o=ac.createOscillator(), og=ac.createGain(); o.type=metal?'triangle':'sine'; o.frequency.setValueAtTime(metal?rr(620,790):rr(190,250),t);
+  if(!metal) o.frequency.exponentialRampToValueAtTime(90,t+.08);
+  env(og,t,.002,(metal?.1:.45)*pw,metal?.45:.1); o.connect(og).connect(sp.mix); o.start(t); o.stop(t+(metal?.55:.16)); }
+function goalSound(){ const ac=audio(); if(!ac) return; const t=ac.currentTime;
+  [784,988,1175].forEach((f,i)=>{ const o=ac.createOscillator(), g=ac.createGain(); o.type='triangle'; o.frequency.value=f;
+    env(g,t+i*.09,.01,.055,.32); o.connect(g).connect(OUT); o.start(t+i*.09); o.stop(t+i*.09+.4); });
+  const s=srcOf(BUF.white,1,false), f2=filt('bandpass',2100,8), g2=ac.createGain();
+  env(g2,t,.02,.045,.55); s.connect(f2).connect(g2).connect(OUT); s.start(t,Math.random()*2); s.stop(t+.65); }
+
 /* ---------- loop ---------- */
 let CAMLOCK=null;
 const clock=new THREE.Clock(); const fwd=new V3(), rgt=new V3(), wish=new V3(); let lastZone='', hudT=0;
@@ -2175,6 +2686,8 @@ function frame(){
     if(wl>.05 && (onGround||fly||hs>.5)){ face=lerpA(face,Math.atan2(wish.x,wish.z),1-Math.exp(-(fly?5:11)*dt)); }
     updateCars(dt);
     if(punchT>0){ const t0=1-punchT/PUNCH_D; punchT-=dt; if(t0<.36 && 1-punchT/PUNCH_D>=.36) punchHit(); face=lerpA(face,yaw+Math.PI,1-Math.exp(-16*dt)); }
+    if(kickT>0){ const t0=1-kickT/KICK_D; kickT-=dt; if(t0<.33 && 1-kickT/KICK_D>=.33) kickHit(); face=lerpA(face,yaw+Math.PI,1-Math.exp(-18*dt)); }
+    updateBall(dt);
   }
   if(playing){ carNear=DRIVE?null:findCarNear(); updPrompt(); }
   if(castT>0){ castT-=dt; if(playing) face=lerpA(face,yaw+Math.PI,1-Math.exp(-14*dt)); }
@@ -2184,14 +2697,17 @@ function frame(){
   if(shake>0){ camera.position.x+=(Math.random()-.5)*shake; camera.position.y+=(Math.random()-.5)*shake; camera.position.z+=(Math.random()-.5)*shake; camera.rotation.z+=(Math.random()-.5)*shake*.03; }
   if(aimRing){ const inside=DEST.some(d=>!d.down && inRect(d,pos.x,pos.z,0) && pos.y<d.top); aimRing.visible=MODE==='meteor' && playing && (locked||isTouch) && !inside;
     if(aimRing.visible){ camera.updateMatrixWorld(); const ap=aimPoint(), dd=camera.position.distanceTo(ap); aimRing.position.set(ap.x,ap.y+.15,ap.z); aimRing.scale.setScalar(Math.max(1.2,dd*.035)); } }
-  renderer.render(scene,camera);
+  if(composer) composer.render(dt); else renderer.render(scene,camera);
   hudT+=dt; if(hudT>.1 && !attract){ hudT=0; const z=zoneAt(pos.x,pos.z,pos.y); if(z!==lastZone){ $('#zone').textContent=z; lastZone=z; }
     const deg=((-yaw*180/Math.PI-ROT*180/Math.PI)%360+720)%360; const dirs=['북','북동','동','남동','남','남서','서','북서'];
     const st=DRIVE?`운전 중 · ${Math.round(Math.abs(DRIVE.v)*3.6)}km/h`:fly?'비행':!onGround?'점프':hs>WALK+.8?'달리기':hs>.3?'걷기':'서 있음';
-    $('#coord').textContent=`${dirs[Math.round(deg/45)%8]} ${String(Math.round(deg)).padStart(3,'0')}° · ${st}${(pos.y-EYE)>.5?` · 높이 ${(pos.y-EYE).toFixed(1)}m`:''}`; drawMinimap(); }
+    $('#coord').textContent=`${dirs[Math.round(deg/45)%8]} ${String(Math.round(deg)).padStart(3,'0')}° · ${st}${(pos.y-EYE)>.5?` · 높이 ${(pos.y-EYE).toFixed(1)}m`:''}`;
+    const onF=pos.x>FIELD.x0-10&&pos.x<FIELD.x1+10&&pos.z>FIELD.z0-10&&pos.z<FIELD.z1+10, se=$('#soc');
+    se.hidden=!(onF||SOC.score>0); if(!se.hidden) se.textContent=`⚽ ${SOC.score}골 · 슈팅 ${SOC.kicks}`;
+    drawMinimap(); }
   requestAnimationFrame(frame);
 }
-addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); if(composer) composer.setSize(innerWidth,innerHeight); });
 
 /* ---------- boot ---------- */
 async function fontsReady(){ const want=['900 40px "Noto Sans KR"','700 40px "Noto Sans KR"','500 40px "Noto Sans KR"','900 40px "Noto Serif KR"','600 40px "Noto Serif KR"'];
@@ -2205,14 +2721,28 @@ async function init(){
   step('나무 심는 중',72); await tick(); buildTrees();
   step('주변 풍경 채우는 중',88); await tick(); buildSurroundings();
   initFX(); assignDest();
-  buildHero(); applyPreset('dusk'); buildMinimap(); spawn('walk');
+  buildHero(); buildBall();
+  collectAO(); collectMats(); buildComposer();
+  applyPreset('dusk'); setGfx(GFX); buildMinimap(); spawn('walk');
   let m='walk'; try{ m=localStorage.getItem('sejong3d.mode')==='meteor'?'meteor':'walk'; }catch(_){} setMode(m);
   step('완료',100); await tick();
   document.body.classList.add('title'); $('#loading').hidden=true; $('#start').hidden=false; $('#startBtn').focus();
   frame();
   initPoints();
+  if(HERO.url) loadHero(HERO.url);
 }
 window.__sj={ teleport:i=>{ const p=PLACES[i]; pos.set(X(p.px),(p.y||0)+EYE,Z(p.py)); yaw=p.yaw; pitch=-.1; vel.set(0,0,0); face=yaw+Math.PI; camInit=true; }, applyPreset, setView:(px,py,yw,pt,y)=>{ pos.set(X(px),y??EYE,Z(py)); yaw=yw; pitch=pt??0; face=yw+Math.PI; camInit=true; }, hideUI:()=>{ $('#pause').hidden=true; }, where:()=>[+PX(pos.x).toFixed(1),+PZ(pos.z).toFixed(1),+(pos.y-EYE).toFixed(2)], play:(m)=>{ if(m) setMode(m); beginGame(); },
-  mode:m=>setMode(m,true), keys, drive:i=>enterCar(CARS[i]), cam:(px,py,y,yw,pt,vfov,aspect)=>{ CAMLOCK=px==null?null:{ p:new V3(X(px),y,Z(py)), yaw:yw, pitch:pt }; if(vfov){ camera.fov=vfov; camera.updateProjectionMatrix(); } }, boom:(px,py,big)=>impact(new V3(X(px),0,Z(py)),!!big), cars:()=>CARS.map(c=>[+c.x.toFixed(1),+c.z.toFixed(1),+c.v.toFixed(1),c.wreck,c.air]), exit:()=>exitCar(), punch:()=>punch(), near:()=>!!carNear, hero:()=>({ pvX:H.pivot.rotation.x, flyK, amp, airK, P:{...P} }), state:()=>({ MODE, fly, onGround, hs:+Math.hypot(vel.x,vel.z).toFixed(2), camD:+camD.toFixed(2), face:+face.toFixed(2), vis:H.root.visible, cam:camera.position.toArray().map(v=>+v.toFixed(2)) }), pause, resume, toTitle, meteor:(big)=>launch(!!big), level:()=>{ if(!AC) return -1; if(!window.__an){ window.__an=AC.createAnalyser(); window.__an.fftSize=2048; OUT.connect(window.__an); } const d=new Float32Array(2048); window.__an.getFloatTimeDomainData(d); let m=0; for(const v of d) m=Math.max(m,Math.abs(v)); return +m.toFixed(3); }, acstate:()=>AC?AC.state:'none', restore:()=>restoreAll(), down:()=>DEST.filter(d=>d.down).map(d=>d.name||'') };
+  mode:m=>setMode(m,true), keys, drive:i=>enterCar(CARS[i]), cam:(px,py,y,yw,pt,vfov,aspect)=>{ CAMLOCK=px==null?null:{ p:new V3(X(px),y,Z(py)), yaw:yw, pitch:pt }; if(vfov){ camera.fov=vfov; camera.updateProjectionMatrix(); } }, boom:(px,py,big)=>impact(new V3(X(px),0,Z(py)),!!big), cars:()=>CARS.map(c=>[+c.x.toFixed(1),+c.z.toFixed(1),+c.v.toFixed(1),c.wreck,c.air]), exit:()=>exitCar(), punch:()=>punch(), near:()=>!!carNear, hero:()=>({ pvX:H.pivot.rotation.x, flyK, amp, airK, P:{...P} }), state:()=>({ MODE, fly, onGround, hs:+Math.hypot(vel.x,vel.z).toFixed(2), camD:+camD.toFixed(2), face:+face.toFixed(2), vis:H.root.visible, cam:camera.position.toArray().map(v=>+v.toFixed(2)) }), pause, resume, toTitle, meteor:(big)=>launch(!!big), level:()=>{ if(!AC) return -1; if(!window.__an){ window.__an=AC.createAnalyser(); window.__an.fftSize=2048; OUT.connect(window.__an); } const d=new Float32Array(2048); window.__an.getFloatTimeDomainData(d); let m=0; for(const v of d) m=Math.max(m,Math.abs(v)); return +m.toFixed(3); }, acstate:()=>AC?AC.state:'none', restore:()=>restoreAll(), down:()=>DEST.filter(d=>d.down).map(d=>d.name||''),
+  THREE, scene, camera, renderer, get composer(){return composer}, get gtao(){return gtaoPass}, gfx:g=>setGfx(g),
+  env:i=>{ setEnvI(i); return i; }, noEnv:()=>{ scene.environment=null; }, reEnv:()=>bakeEnv(),
+  exp:e=>{ renderer.toneMappingExposure=e; return e; }, hemi:i=>{ hemi.intensity=i; return i; },
+  sunI:i=>{ sun.intensity=i; return i; }, ball:()=>({p:BALL.p.toArray().map(v=>+v.toFixed(2)), v:BALL.v.toArray().map(v=>+v.toFixed(2)), score:SOC.score, kicks:SOC.kicks}),
+  hero3d:async (u,an)=>{ if(u!==undefined){ try{ u?localStorage.setItem('sejong3d.hero',u):localStorage.removeItem('sejong3d.hero'); }catch(_){} HERO.url=u; }
+    if(an!==undefined){ try{ an?localStorage.setItem('sejong3d.heroAnim',an):localStorage.removeItem('sejong3d.heroAnim'); }catch(_){} HERO.anim=an; }
+    if(GH.ready){ if(GH.root) H.body.remove(GH.root); GH.ready=false; GH.root=null; GH.mixer=null; GH.act={}; GH.bone={}; GH.axis={}; H.pelvis.visible=true; }
+    return HERO.url?await loadHero(HERO.url):'procedural'; },
+  dress:v=>{ HERO.uniform=v!==false; return GH.root?dressHero(GH.root):'no model'; },
+  gh:()=>({ ready:GH.ready, bones:Object.keys(GH.bone), using:GH.used, hasClips:GH.hasClips, size:GH.size, available:GH.clipNames }),
+  kick:()=>kick(), putBall:(px,py)=>resetBall(new V3(X(px),BALL.r+.02,Z(py))), fps:async()=>{ let n=0; const t0=performance.now(); await new Promise(r=>{const f=()=>{n++; performance.now()-t0<1000?requestAnimationFrame(f):r()}; requestAnimationFrame(f)}); return Math.round(n*1000/(performance.now()-t0)); } };
 init().catch(err=>{ console.error(err); step('불러오지 못했어요: '+err.message,100); });
 </script>
