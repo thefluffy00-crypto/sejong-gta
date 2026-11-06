@@ -806,7 +806,7 @@ function buildCampus(){
   // 검무관
   buildGumMu();
   // gate, monument, gazebo, field…
-  buildGate(); buildMonument(); buildGazebo(); buildBayB(); buildField(); buildProps();
+  buildGate(); buildMonument(); buildGazebo(); buildBayB(); buildField(); buildProps(); buildMainPorch();
   finishInteriors();
 }
 function windowDoor(x,z,face,w,h){ const d=plane(w,h,textCanvas(160,128,(g,W,H)=>{ g.fillStyle='#6b7378'; g.fillRect(0,0,W,H); const gr=g.createLinearGradient(0,0,W,H); gr.addColorStop(0,'#9fb2be'); gr.addColorStop(.6,'#3b4a54'); gr.addColorStop(1,'#20282e'); g.fillStyle=gr; g.fillRect(6,6,W-12,H-6); g.fillStyle='#6b7378'; g.fillRect(W/2-3,0,6,H); g.fillStyle='#bfe0c4'; g.fillRect(14,H*.25,24,10); }),{rough:.3}); d.rotation.y=facing[face]; d.position.set(x,h/2,z); }
@@ -1457,6 +1457,48 @@ function buildProps(){
   for(const [v,dv,col] of [[300,30,0xb9bcc0],[620,55,0x24303f],[820,25,0xe9e9e6]]){ car(hwW(v)+dv,v,Math.PI/2-tilt,col); }
   box(4.4,.12,25,mat(0x2f6fb8,{roughness:.5}),X(187),2.6,Z(450));
   for(const dz of [-11,-5.5,0,5.5,11]) box(.1,2.6,.1,pm,X(187)-1.9,1.3,Z(450)+dz,false);
+}
+
+// ---- entrances and signage taken straight off the site photos ----
+function signPlate(wm,hm,draw,x,y,z,rot,o={}){
+  const p=plane(wm,hm,textCanvas(Math.round(wm*200),Math.round(hm*200),draw),o);
+  p.rotation.y=rot; p.position.set(x,y,z); return p;
+}
+function fitFont(g,txt,w,weight,start){ let fs=start; do{ g.font=`${weight} ${fs}px "Noto Sans KR"`; }while(g.measureText(txt).width>w && --fs>6); return fs; }
+const GLASSM=()=>new THREE.MeshStandardMaterial({color:0x9fb6c4,roughness:.06,metalness:.2,transparent:true,opacity:.3});
+
+// B동 서쪽 현관 — 정문에서 들어오면 처음 만나는 입구 (둥근 화강암 기둥, 현수막, 동 안내판)
+function buildMainPorch(){
+  const wx=X(402), z0=Z(329), z1=Z(344), zc=(z0+z1)/2;
+  const gtex=ctex(textCanvas(128,256,(g,w,h)=>{ g.fillStyle='#cdc8bd'; g.fillRect(0,0,w,h);
+    for(let i=0;i<1100;i++){ g.fillStyle=`rgba(${R()<.5?'92,87,79':'246,243,237'},${rr(.1,.38)})`; g.fillRect(R()*w,R()*h,rr(1,3),rr(1,3)); }
+    g.fillStyle='rgba(70,66,60,.45)'; g.fillRect(0,h*.52,w,2); }));
+  const gm=mat(0xffffff,{map:gtex,roughness:.8});
+  for(const z of [z0+.5, z1-.5]){ const x=wx-3.4;
+    const c=new THREE.Mesh(new THREE.CylinderGeometry(.46,.5,7.3,18),gm); c.position.set(x,3.65,z); add(c); circles.push({x,z,r:.56}); }
+  box(3.7,.42,z1-z0+2.2, mat(0xe7e3d9,{roughness:.9}), wx-1.85, 3.45, zc);
+  box(4.0,.12,z1-z0+2.6, mat(0xc9c5bb,{roughness:.9}), wx-1.85, 3.69, zc, false);
+  signPlate(2.9,.44,(g,w,h)=>{ g.fillStyle='#f3f0e8'; g.fillRect(0,0,w,h);
+      const a='세계로 나아가는 협력형 ', b='창의·융합 인재 육성';
+      fitFont(g,a+b,w*.94,900,Math.round(h*.56));
+      const wa=g.measureText(a).width, wb=g.measureText(b).width, x0=(w-wa-wb)/2;
+      g.textAlign='left'; g.fillStyle='#1b3f8f'; g.fillText(a,x0,h*.56); g.fillStyle='#b62a22'; g.fillText(b,x0+wa,h*.56); },
+    wx-.06, 3.18, zc, facing.w, {rough:.85});
+  const gl=GLASSM(), fr=mat(0xb9bec2,{metalness:.7,roughness:.3});
+  for(const z of [z0+.52, z1-.52]){
+    const p=new THREE.Mesh(new THREE.PlaneGeometry(.95,2.52),gl); p.rotation.y=facing.w; p.position.set(wx-.1,1.3,z); add(p,false,false);
+    box(.07,2.6,.06,fr,wx-.1,1.3,z-.5,false); box(.07,2.6,.06,fr,wx-.1,1.3,z+.5,false); }
+  { const tw=z1-z0-.3, p=new THREE.Mesh(new THREE.PlaneGeometry(tw,.42),gl); p.rotation.y=facing.w; p.position.set(wx-.1,2.78,zc); add(p,false,false);
+    box(.07,.06,tw,fr,wx-.1,2.56,zc,false); box(.07,.06,tw,fr,wx-.1,3.0,zc,false); }
+  for(const z of [zc-.52, zc+.52]) box(.07,2.5,.05,fr,wx-.12,1.25,z,false);
+  // the sign the school actually has on this column: it reads A동, but this is B동
+  signPlate(.78,.92,(g,w,h)=>{ g.fillStyle='#f6f4ef'; g.fillRect(0,0,w,h);
+      g.strokeStyle='#2b2b2b'; g.lineWidth=Math.max(2,h*.022); g.strokeRect(h*.05,h*.05,w-h*.1,h-h*.1);
+      g.fillStyle='#1b1b1b'; fitFont(g,'A동',w*.6,900,Math.round(h*.3)); g.fillText('A동',w*.5,h*.26);
+      g.beginPath(); g.moveTo(w*.14,h*.43); g.lineTo(w*.86,h*.43); g.stroke();
+      g.fillStyle='#b62a22'; fitFont(g,'← B동',w*.62,900,Math.round(h*.2));
+      g.fillText('← B동',w*.5,h*.58); g.fillText('C동 →',w*.5,h*.8); },
+    wx-3.93, 2.3, z0+.5, facing.w, {rough:.7});
 }
 
 /* ---------- surroundings: hills, apartments, town, stars ---------- */
