@@ -669,7 +669,7 @@ function paintGround(F){
   const bc=cvs(32,32), bg=bc.getContext('2d');
   for(let y=0;y<32;y+=4) for(let x=0;x<32;x+=8){ bg.fillStyle=pick(['#9d6a60','#a9786c','#8b5f58','#b38b7b','#94695f','#a07a72']); bg.fillRect(x+((y/4)%2)*4,y,8,4); }
   const bpat=g.createPattern(bc,'repeat'); bpat.setTransform(new DOMMatrix().scale(8/32));
-  [[230,208,402,227],[380,208,402,345],[270,322,402,343],[290,380,360,397],[380,343,452,420],[392,420,432,640],[508,188,573,298],[476,247,577,250],[697,135,722,165],[202,672,300,690],[242,686,377,695],[358,278,402,345]].forEach(r=>fr(r,bpat));
+  [[230,208,402,227],[380,208,402,345],[270,322,402,343],[290,380,360,397],[380,343,452,420],[378,420,396,600],[392,420,432,640],[508,188,573,298],[476,247,577,250],[697,135,722,165],[202,672,300,690],[242,686,377,695],[358,278,402,345]].forEach(r=>fr(r,bpat));
   // 연문학사 2동 앞 화강암 격자 포장 (사진: 연문학사 2동)
   for(let x=300;x<=392;x+=7.5) line([x,620],[x,686],'rgba(55,53,50,.5)',.9);
   for(let y=620;y<=686;y+=7.5) line([300,y],[392,y],'rgba(55,53,50,.5)',.9);
@@ -775,7 +775,7 @@ const LAYOUT={
   W1:{ r:BD.W1, label:'C동', floors:3, axis:'z', corr:[327,338], style:ST.main(3,3.8), roof:0x9aa0a3,
     lo:[ {w:6.5,t:'stair',n:['계단']}, {n:['남교직원 화장실','남교직원 화장실','여교직원 화장실']} ],
     hi:[ {w:3,t:'pass',n:['현관 (C동)','연결통로','연결통로']}, {w:5.5,n:['건강체육교무실','학생용 화장실','학생용 화장실']}, {n:['체육실','홈베이스','진로상담실']} ],
-    holes:[ {f:'n',t:[360,380],k:[0,1,2]}, {f:'s',t:[327,338],k:[0,1,2]} ] },
+    holes:[ {f:'n',t:[360,380],k:[0,1,2]}, {f:'s',t:[327,338],k:[0,1,2]}, {f:'e',t:[446,458],k:[0]} ] },
   W2:{ r:BD.W2, label:'C동', floors:2, y0:3.8, axis:'z', corr:[327,338], style:ST.main(2,3.8), roof:0x5f8f6e, line:['n'],
     hi:[ {w:8,n:['3-10','3학년 교무실']}, {w:8,n:['3-9','3-2']}, {w:8,n:['3-8','3-3']}, {w:8,n:['3-7','3-4']}, {n:['3-6','3-5']} ],
     holes:[ {f:'n',t:[327,338],k:[0,1]} ] },
@@ -969,6 +969,15 @@ function ib(def){
     if(/화장실/.test(name)){ for(let a=g0+.15; a<g1-.1; a+=1.25) put(IBS.stall,a,yk+.95,sd.outer+sd.dir*.95,.04,1.9,1.5);
       for(let a=g0+2.6; a<g1-.6; a+=.9) put(IBS.sink,a,yk+.82,sd.inner-sd.dir*.45,.6,.1,.45); return; }
     if(/책드림|도서/.test(name)){ for(let a=g0+1.5; a<g1-1; a+=1.8) put(IBS.shelf,a,yk+.95,cm,.45,1.9,Math.min(D-2.4,5)); return; }
+    if(/식생활|급식/.test(name)){
+      const sl=Math.min(L-3,10);
+      put(IBS.steel,(g0+g1)/2,yk+.45,ci1-.95,sl,.9,.75); put(IBS.steel,(g0+g1)/2,yk+.93,ci1-.95,sl,.06,.95);
+      put(IBS.steel,(g0+g1)/2,yk+1.45,ci1-.95,sl,.08,.8);
+      for(let a=g0+1.8; a<g1-3.6; a+=3.9) for(let c=ci0+1.6; c<ci1-3.4; c+=2.5){
+        put(IBS.steel,a+1.5,yk+.73,c,3.0,.06,.82); put(IBS.metal,a+1.5,yk+.36,c,.12,.72,.12); put(IBS.metal,a+1.5,yk+.04,c,1.5,.08,.5);
+        for(const sg of [-.8,.8]) for(let i=0;i<4;i++){ const sx=a+.35+i*.78;
+          put(IBS.shelf,sx,yk+.46,c+sg,.3,.08,.3); put(IBS.metal,sx,yk+.23,c+sg,.06,.46,.06); put(IBS.metal,sx,yk+.02,c+sg,.26,.05,.14); } }
+      return; }
     if(/식생활|카페|라운지|홈베이스|휴게|테라스/.test(name)){ for(let a=g0+1.6; a<g1-1.2; a+=2.2) for(let c=ci0+1.6; c<ci1-1.4; c+=3.2){
         put(IBS.wood,a,yk+.74,c,.8,.05,2.2); put(IBS.metal,a,yk+.36,c,.6,.7,.08); for(const sa of [-.65,.65]) for(const t of [-.7,0,.7]) put(IBS.chair,a+sa,yk+.23,c+t,.34,.46,.34); } return; }
     if(/^\d-\d+$|강의실|과학실|교육실|미술|음악|컴퓨터|기술가정|첨단|진로활동|미래배움|체육실|위클래스/.test(name)){
@@ -1732,6 +1741,83 @@ function shoeLockers(px,py,rot,len){
   collide(x-hw,x+hw,z-hd,z+hd,2.0);
 }
 
+// ---- entrances and signage taken straight off the site photos ----
+function signPlate(wm,hm,draw,x,y,z,rot,o={}){
+  const p=plane(wm,hm,textCanvas(Math.round(wm*200),Math.round(hm*200),draw),o);
+  p.rotation.y=rot; p.position.set(x,y,z); return p;
+}
+function fitFont(g,txt,w,weight,start){ let fs=start; do{ g.font=`${weight} ${fs}px "Noto Sans KR"`; }while(g.measureText(txt).width>w && --fs>6); return fs; }
+const GLASSM=()=>new THREE.MeshStandardMaterial({color:0x9fb6c4,roughness:.06,metalness:.2,transparent:true,opacity:.3});
+
+// B동 서쪽 현관 — 정문에서 들어오면 처음 만나는 입구 (둥근 화강암 기둥, 현수막, 동 안내판)
+function buildMainPorch(){
+  const wx=X(402), z0=Z(329), z1=Z(344), zc=(z0+z1)/2;
+  const gtex=ctex(textCanvas(128,256,(g,w,h)=>{ g.fillStyle='#cdc8bd'; g.fillRect(0,0,w,h);
+    for(let i=0;i<1100;i++){ g.fillStyle=`rgba(${R()<.5?'92,87,79':'246,243,237'},${rr(.1,.38)})`; g.fillRect(R()*w,R()*h,rr(1,3),rr(1,3)); }
+    g.fillStyle='rgba(70,66,60,.45)'; g.fillRect(0,h*.52,w,2); }));
+  const gm=mat(0xffffff,{map:gtex,roughness:.8});
+  for(const z of [z0+.5, z1-.5]){ const x=wx-3.4;
+    const c=new THREE.Mesh(new THREE.CylinderGeometry(.46,.5,7.3,18),gm); c.position.set(x,3.65,z); add(c); circles.push({x,z,r:.56}); }
+  box(3.7,.42,z1-z0+2.2, mat(0xe7e3d9,{roughness:.9}), wx-1.85, 3.45, zc);
+  box(4.0,.12,z1-z0+2.6, mat(0xc9c5bb,{roughness:.9}), wx-1.85, 3.69, zc, false);
+  signPlate(3.4,.5,(g,w,h)=>{ g.fillStyle='#f3f0e8'; g.fillRect(0,0,w,h);
+      const a='세계로 나아가는 협력형 ', b='창의·융합 인재 육성';
+      fitFont(g,a+b,w*.94,900,Math.round(h*.56));
+      const wa=g.measureText(a).width, wb=g.measureText(b).width, x0=(w-wa-wb)/2;
+      g.textAlign='left'; g.fillStyle='#1b3f8f'; g.fillText(a,x0,h*.56); g.fillStyle='#b62a22'; g.fillText(b,x0+wa,h*.56); },
+    wx-.06, 3.12, zc, facing.w, {rough:.85});
+  const gl=GLASSM();
+  for(const z of [z0+.6, z1-.6]){ const p=new THREE.Mesh(new THREE.PlaneGeometry(1.1,2.5),gl); p.rotation.y=facing.w; p.position.set(wx-.09,1.3,z); add(p,false,false); }
+  // the sign the school actually has on this column: it reads A동, but this is B동
+  signPlate(.78,.92,(g,w,h)=>{ g.fillStyle='#f6f4ef'; g.fillRect(0,0,w,h);
+      g.strokeStyle='#2b2b2b'; g.lineWidth=Math.max(2,h*.022); g.strokeRect(h*.05,h*.05,w-h*.1,h-h*.1);
+      g.fillStyle='#1b1b1b'; fitFont(g,'A동',w*.6,900,Math.round(h*.3)); g.fillText('A동',w*.5,h*.26);
+      g.beginPath(); g.moveTo(w*.14,h*.43); g.lineTo(w*.86,h*.43); g.stroke();
+      g.fillStyle='#b62a22'; fitFont(g,'← B동',w*.62,900,Math.round(h*.2));
+      g.fillText('← B동',w*.5,h*.58); g.fillText('C동 →',w*.5,h*.8); },
+    wx-3.9, 2.35, z0+.5, facing.w, {rough:.7});
+}
+
+// B동 중앙현관 — 밖은 급식실 입구, 안은 식생활 교육관 로비
+function buildCentralPorch(){
+  const sx0=X(611), sx1=X(625), cx=(sx0+sx1)/2, W=sx1-sx0, sz=Z(373);
+  box(W+2.4,.4,2.6, mat(0xe7e3d9,{roughness:.9}), cx, 3.5, sz+1.3);
+  const pm=mat(0x9aa0a6,{metalness:.6,roughness:.4});
+  for(const dx of [-W/2-.9, W/2+.9]){ const x=cx+dx, z=sz+2.4;
+    const p=new THREE.Mesh(new THREE.CylinderGeometry(.09,.09,3.3,10),pm); p.position.set(x,1.65,z); add(p); circles.push({x,z,r:.16}); }
+  signPlate(3.2,.42,(g,w,h)=>{ g.fillStyle='#1b3f8f'; g.fillRect(0,0,w,h);
+      g.fillStyle='#fff'; fitFont(g,'세 종 고 등 학 교',w*.9,900,Math.round(h*.62)); g.fillText('세 종 고 등 학 교',w/2,h*.56); },
+    cx, 2.98, sz+.07, facing.s, {rough:.6});
+  const gl=GLASSM();
+  for(const dx of [-W/2+.55, W/2-.55]){ const p=new THREE.Mesh(new THREE.PlaneGeometry(1.0,2.5),gl); p.rotation.y=facing.s; p.position.set(cx+dx,1.3,sz+.06); add(p,false,false); }
+  // inside the passage
+  const pz=sz-3.2;
+  signPlate(2.2,1.25,(g,w,h)=>{ g.fillStyle='#17356f'; g.fillRect(0,0,w,h);
+      g.fillStyle='#f3f1ea'; g.fillRect(h*.07,h*.2,w-h*.14,h-h*.28);
+      g.fillStyle='#f3f1ea'; fitFont(g,'SEJONG HIGH SCHOOL',w*.5,700,Math.round(h*.12)); g.fillText('SEJONG HIGH SCHOOL',w*.3,h*.11);
+      for(let i=0;i<8;i++){ const cw=(w-h*.3)/4, ch=(h-h*.36)/2;
+        g.fillStyle=pick(['#dfe3ea','#eee9dd','#e6ecef','#e4e8e2']);
+        g.fillRect(h*.11+(i%4)*cw+3, h*.26+Math.floor(i/4)*ch+3, cw-6, ch-6); } },
+    sx0+.09, 1.95, pz, facing.e, {rough:.8});
+  signPlate(1.7,.4,(g,w,h)=>{ g.fillStyle='#4d8f3f'; g.fillRect(0,0,w,h);
+      g.fillStyle='#fff'; fitFont(g,'식생활 교육관',w*.88,900,Math.round(h*.62)); g.fillText('식생활 교육관',w/2,h*.56); },
+    sx1-.09, 2.6, pz-1.3, facing.w, {rough:.6});
+  const cr=mat(0x2f7a3f,{roughness:.8});
+  for(let i=0;i<5;i++) box(.55,.3,.42,cr, sx1-.55, .15+i*.3, pz-2.3);
+  collide(sx1-.85,sx1-.25,pz-2.55,pz-2.05,1.6);
+}
+
+// C동 체육실 출입구 (운동장 쪽 지붕길에서 들어가는 문)
+function buildGymRoomDoor(){
+  const ex=X(380), z=Z(452);
+  signPlate(1.05,.4,(g,w,h)=>{ g.fillStyle='#f4f4f0'; g.fillRect(0,0,w,h);
+      g.fillStyle='#1b1b1b'; fitFont(g,'체육실',w*.78,900,Math.round(h*.62)); g.fillText('체육실',w/2,h*.46);
+      g.fillStyle='#2f8a4f'; g.fillRect(0,h-h*.16,w,h*.16); },
+    ex+.1, 3.15, z, facing.e, {rough:.7});
+  const gl=GLASSM();
+  for(const dz of [-1.05,1.05]){ const p=new THREE.Mesh(new THREE.PlaneGeometry(.9,2.5),gl); p.rotation.y=facing.e; p.position.set(ex+.07,1.3,z+dz); add(p,false,false); }
+}
+
 function buildOutdoors(){
   // 운동장 서쪽 볼스톱 네트 — the brick path runs outside it (사진: 운동장 앞 길)
   ballStop([432,406],[432,806], 8.2);
@@ -1757,6 +1843,8 @@ function buildOutdoors(){
   siteBox(718, 450, Math.PI/2);
   // 신발장 (B동 1층 통로)
   shoeLockers(420, 331.3, 0, 7.0); shoeLockers(420, 341.7, 0, 7.0);
+  // 현관과 간판
+  buildMainPorch(); buildCentralPorch(); buildGymRoomDoor();
 }
 
 /* ---------- surroundings: hills, apartments, town, stars ---------- */
