@@ -74,6 +74,10 @@ GitHub Pages로 배포: https://thefluffy00-crypto.github.io/sejong-gta/ (main �
 ## 게임 시스템
 
 - 모드: `MODE` = `'walk'`(일반, 비행·운석 없음) | `'meteor'`(F 비행, 클릭·G·H 운석). 시작 화면 `#start`, 일시정지 `#pause`.
+- **UI는 최소로 유지할 것** (사용자 요청). 게임 중 화면에 있는 건 **미니맵뿐**. 위치·방위·속도·점프 높이·모드 표시·키 안내 띠는 전부 뺐음. 터치 기기에서만 오른쪽 위 `#tr`(메뉴·운석)과 조이스틱·버튼이 뜸.
+- 시작 화면과 일시정지는 같은 세로 메뉴를 씀. `menuNav(메뉴셀렉터, 패널셀렉터, onPick)`이 위아래 키·마우스·클릭을 처리하고, `.mi[aria-current="true"]`가 노란 강조임. 항목은 `data-act`(시작 화면) / `data-pact`(일시정지).
+- `openPanel(M,'keys'|'gfx')`가 메뉴 아래에 패널을 펼침. **설정은 그래픽뿐** — 시간대(낮/노을/밤) 선택 UI는 뺐고 기본값은 `day`. 밤이 필요하면 `__sj.applyPreset('night')`.
+- 시작 화면 배경은 `attractCam()`의 저공 궤도(R=152, 높이 42). 너무 높이·멀리 두면 안개에 묻혀 어두워 보임.
 - 3인칭 캐릭터: `buildHero()` 절차적 모델, `animHero()` 걷기·달리기·점프·비행·주먹 포즈. 카메라는 `placeCamera()`로 어깨 뒤 궤도를 돌고, `camCast()`로 벽·바닥·천장에 막힘.
 - 자동차: `CARS` (`regCar`, `updateCars`, `enterCar`/`exitCar`, E키). 차는 원 두 개로 충돌 처리.
 - 주먹: `punch()`, `punchHit()`.
