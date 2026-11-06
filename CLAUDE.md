@@ -79,6 +79,15 @@ GitHub Pages로 배포: https://thefluffy00-crypto.github.io/sejong-gta/ (main �
 - 주먹: `punch()`, `punchHit()`.
 - 운석과 파괴: `launch()`, `impact()`, `collapse()`, `restoreAll()`. 건물은 `DEST`에 등록되고, `assignDest()`가 장면 객체를 가장 가까운 건물에 붙임.
 - 축구: 운동장(`FIELD`)에 공 하나. 걸어서 밀면 드리블, 공 옆(1.9m 안)에서 클릭하면 슛(`kick()` → 애니메이션 중간 `kickHit()`에서 임펄스, Shift면 강슛, 시선 pitch만큼 띄움). 골대 기둥은 원래 `circles`에 있어서 그대로 맞고 튐. 골라인(`FIELD.z0+3`, `FIELD.z1-3`)을 기둥 사이·크로스바(2.44m) 아래로 통과하면 `scoreGoal()` → 1.4초 뒤 센터서클로 리셋. `B`키로 공을 발 앞에 가져옴. NPC는 없음.
+- 부서지는 사물(`SMASH`): 나무·관목·가로등·피크닉 테이블 **370개**가 등록돼 있음. 차로 들이받으면 쓰러지고 파편이 튐.
+  - 등록은 `smashMark()`로 인스턴스/circles 인덱스를 찍고 `smashReg()`로 범위를 저장하는 식. 나무 생성 함수(`pine`/`broad`/`column`/`ginkgo`/`shrub`) 안에서 직접 부르므로 `scatter()` 같은 간접 호출도 전부 잡힘.
+  - `smashProp(sp,dirx,dirz,power)`: circles를 떼고, 밑동을 축으로 인스턴스와 개별 메시를 함께 기울이고, 파편·소리. 회전축은 `(dz,0,-dx)` — 부호를 뒤집으면 나무가 **차 쪽으로** 쓰러짐.
+  - `carSmash(c)`가 `carHits(c)` **앞에** 호출됨. 순서가 바뀌면 이미 쓰러진 물체에 차가 튕김. 종류별 `tough`(필요 속도)와 `drag`(감속)로 관목은 스치고 지나가고 가로등은 확 느려지게 함.
+  - 되돌리기는 기존 `SAVED`(인스턴스 행렬)와 `FX.rmCircles`에 얹었고, 개별 메시만 `SMASH_MOVED`로 따로 저장함. `restoreAll()`에서 전부 복구됨.
+  - 주먹으로는 `tough<=3`인 것(관목)만 부서짐.
+  - `spawnDebris(p,n,spd,up,big,opt)`의 `opt`로 `smin/smax/spread/cols`를 줄 수 있음. 안 주면 기존 건물 잔해 크기라 가로등 파편이 1m 덩어리로 나옴.
+  - 디버그: `__sj.smash()`, `__sj.smashNear(px,py,r)`, `__sj.putCar(i,px,py,aRad,v)`.
+  - **주의**: `updateCars`의 `moving` 판정은 `c.v`를 보지 않음(`drv || air || vx+vz>.02 || wob`). 주차된 차에 `c.v`만 넣어도 안 움직이므로, 테스트할 땐 `__sj.drive(i)`로 운전 상태를 만들 것.
 - 소리: Web Audio 합성 (`audio()`, `spot()`, 엔진·경적·충돌·발소리, 공 바운스·골).
 - 사진 맞춤 지점: P키로 카메라 위치, 방향, 썸네일을 저장. claude.ai 아티팩트에서는 공유 DB에, GitHub Pages에서는 localStorage에 저장되고, 메뉴의 "목록 복사"로 텍스트로 뽑을 수 있음.
 
