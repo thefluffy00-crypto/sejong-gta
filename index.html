@@ -96,6 +96,10 @@ body.touch #mm canvas{width:110px;height:141px}
 /* start screen */
 body.title .hud{display:none!important}
 #start{position:fixed;inset:0;z-index:10;display:flex;align-items:stretch;overflow:hidden}
+#start .artbg{position:absolute;inset:0;background:#0b0813;opacity:0;transition:opacity 1.3s ease;pointer-events:none}
+#start .art{position:absolute;top:0;bottom:0;right:0;width:76%;height:100%;object-fit:cover;object-position:52% 34%;opacity:0;transition:opacity 1.3s ease;pointer-events:none}
+#start .art.on,#start .artbg.on{opacity:1}
+@media (prefers-reduced-motion:reduce){#start .art,#start .artbg{transition:none}}
 #start .bg{position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,#0b0813 0%,#0b0813 56%,rgba(11,8,19,.9) 80%,rgba(11,8,19,0) 100%);clip-path:polygon(0 0,31% 0,20% 100%,0 100%)}
 .st{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:center;width:min(32vw,430px);min-width:264px;box-sizing:border-box;padding:0 20px 0 max(clamp(22px,4.2vw,62px),env(safe-area-inset-left,0px))}
 .st-title{margin:0 0 32px;font-family:"Black Han Sans",var(--f-body);font-weight:400;color:#fff;line-height:.88;letter-spacing:-.01em}
@@ -110,6 +114,7 @@ body.touch .st-enter{display:none}
   #start .bg{clip-path:none;background:linear-gradient(0deg,#0b0813 0%,rgba(11,8,19,.88) 36%,rgba(11,8,19,0) 70%)}
   .st{width:100%;min-width:0;justify-content:flex-end;padding:0 18px calc(26px + env(safe-area-inset-bottom,0px))}
   .st-title{margin-bottom:16px}
+  #start .art{width:100%;object-position:50% 26%}
 }
 /* pause */
 .pcard{width:min(420px,100%);background:#0f0c1a;border:1px solid var(--line);border-radius:14px;padding:22px 20px 20px;box-shadow:0 30px 80px rgba(0,0,0,.55)}
@@ -141,6 +146,8 @@ details.pts[open] summary::after{content:"접기"}
 </div>
 
 <div id="start" hidden>
+  <div class="artbg" id="stArtBg"></div>
+  <img class="art" id="stArt" src="art/students.jpg" alt="" aria-hidden="true" decoding="async">
   <div class="bg"></div>
   <div class="st">
     <h1 class="st-title"><i>세종고</i><span>GTA</span></h1>
@@ -2470,10 +2477,16 @@ function setMode(m,live){ MODE=m; const met=m==='meteor';
   $('#mmc').style.cursor=met?'crosshair':'default'; $('#cross').hidden=!(locked&&met);
   if(live){ if(met){ if(!fly && !DRIVE){ fly=true; vel.y=7; } } else fly=false; $('#tfly').textContent=fly?'착지':'비행'; }
   try{ localStorage.setItem('sejong3d.mode',m); }catch(_){} }
-function beginGame(){ audio(); if(DRIVE) exitCar(true); spawn(MODE); document.body.classList.remove('title'); $('#start').hidden=true; attract=false; resume(); }
+let artT=null;
+function artCycle(on){ clearTimeout(artT); const el=$('#stArt'), bg=$('#stArtBg'); if(!el) return;
+  const set=v=>{ el.classList.toggle('on',v); bg.classList.toggle('on',v); };
+  if(!on){ set(false); return; }
+  const flip=()=>{ const show=!el.classList.contains('on'); set(show); artT=setTimeout(flip, show?7000:9000); };
+  set(true); artT=setTimeout(flip,7000); }
+function beginGame(){ audio(); artCycle(false); if(DRIVE) exitCar(true); spawn(MODE); document.body.classList.remove('title'); $('#start').hidden=true; attract=false; resume(); }
 function resume(){ $('#pause').hidden=true; playing=true; paused=false; clock.getDelta(); lockPointer(); canvas.focus(); }
 function pause(){ if(!playing) return; playing=false; paused=true; for(const k in keys) keys[k]=false; closePanel(PZM); PZM.reset(); $('#pause').hidden=false; if(document.exitPointerLock && locked) document.exitPointerLock(); }
-function toTitle(){ if(DRIVE) exitCar(true); $('#pause').hidden=true; playing=false; paused=false; restoreAll(); attract=true; document.body.classList.add('title'); $('#start').hidden=false; closePanel(STM); STM.reset(); }
+function toTitle(){ if(DRIVE) exitCar(true); $('#pause').hidden=true; playing=false; paused=false; restoreAll(); attract=true; document.body.classList.add('title'); $('#start').hidden=false; closePanel(STM); STM.reset(); artCycle(true); }
 
 /* ---------- vertical menus: the start screen and the pause card share one controller ---------- */
 function menuNav(rootSel, panelSel, onPick){
@@ -2793,7 +2806,7 @@ async function init(){
   applyPreset('day'); setGfx(GFX); buildMinimap(); spawn('walk');
   let m='walk'; try{ m=localStorage.getItem('sejong3d.mode')==='meteor'?'meteor':'walk'; }catch(_){} setMode(m);
   step('완료',100); await tick();
-  document.body.classList.add('title'); $('#loading').hidden=true; $('#start').hidden=false; STM.reset(); canvas.focus();
+  document.body.classList.add('title'); $('#loading').hidden=true; $('#start').hidden=false; STM.reset(); artCycle(true); canvas.focus();
   frame();
   initPoints();
   if(HERO.url) loadHero(HERO.url);
